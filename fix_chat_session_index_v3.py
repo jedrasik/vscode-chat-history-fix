@@ -11,13 +11,21 @@ Features:
 - Detects index corruption (sessions on disk vs sessions in index)
 - Automatically repairs all corrupted workspaces
 - Shows detailed report of what was fixed
+- Optionally removes orphaned index entries
 
 Usage:
-    python3 fix_chat_session_index_v3.py [--dry-run] [--yes]
-
+    python3 fix_chat_session_index_v3.py [--dry-run] [--yes] [--remove-orphans]
+    
 Options:
-    --dry-run    Show what would be fixed without making changes
-    --yes        Skip confirmation prompts and fix everything
+    --dry-run          Show what would be fixed without making changes
+    --yes              Skip confirmation prompts and fix everything
+    --remove-orphans   Remove orphaned index entries (sessions in index but no file)
+                       By default, orphaned entries are kept for safety
+
+What are orphaned entries?
+    - Index entries for sessions where the .json file no longer exists
+    - Usually safe to remove, but kept by default to avoid data loss
+    - Use --remove-orphans only if you're sure you want to delete them
 
 IMPORTANT: Close VS Code completely before running this script!
 """
@@ -115,7 +123,7 @@ def scan_workspaces() -> List[WorkspaceInfo]:
 
     return workspaces
 
-def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_details: bool = False) -> Dict:
+def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_details: bool = False, remove_orphans: bool = False) -> Dict:
     """Repair a workspace's chat session index."""
     result = {
         'success': False,
@@ -128,6 +136,22 @@ def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_detai
     try:
         # Build new index from all session files
         entries = {}
+        
+        # If not removing orphans, start with existing index entries
+        if not remove_orphans and workspace.db_path.exists():
+            try:
+                conn = sqlite3.connect(workspace.db_path)
+                cursor = conn.cursor()
+                row = cursor.execute(
+                    "SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'"
+                ).fetchone()
+                conn.close()
+                
+                if row:
+                    existing_index = json.loads(row[0])
+                    entries = existing_index.get("entries", {})
+            except:
+                pass
 
         for session_id in sorted(workspace.sessions_on_disk):
             session_file = workspace.sessions_dir / f"{session_id}.json"
@@ -208,7 +232,12 @@ def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_detai
 
         result['success'] = True
         result['sessions_restored'] = len(workspace.missing_from_index)
-        result['sessions_removed'] = len(workspace.orphaned_in_index)
+
+        # Only count removed sessions if we're actually removing orphans
+        if remove_orphans:
+            result['sessions_removed'] = len(workspace.orphaned_in_index)
+        else:
+            result['sessions_removed'] = 0
 
     except Exception as e:
         result['error'] = str(e)
@@ -218,6 +247,7 @@ def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_detai
 def main():
     dry_run = '--dry-run' in sys.argv
     auto_yes = '--yes' in sys.argv
+    remove_orphans = '--remove-orphans' in sys.argv
 
     print()
     print("=" * 70)
@@ -227,6 +257,11 @@ def main():
 
     if dry_run:
         print("🔍 DRY RUN MODE - No changes will be made")
+        print()
+    
+    if remove_orphans:
+        print("🗑️  REMOVE ORPHANS MODE - Orphaned index entries will be removed")
+        print()
         print()
 
     # Scan all workspaces
@@ -266,7 +301,12 @@ def main():
             total_missing += len(ws.missing_from_index)
 
         if ws.orphaned_in_index:
-            print(f"   🗑️  Orphaned in index: {len(ws.orphaned_in_index)}")
+            orphan_msg = f"   🗑️  Orphaned in index: {len(ws.orphaned_in_index)}"
+            if remove_orphans:
+                orphan_msg += " (will be removed)"
+            else:
+                orphan_msg += " (will be kept - use --remove-orphans to remove)"
+            print(orphan_msg)
             total_orphaned += len(ws.orphaned_in_index)
 
         print()
@@ -300,7 +340,7 @@ def main():
         folder_display = f" ({ws.folder})" if ws.folder else ""
         print(f"   Repairing: {ws.id}{folder_display}")
 
-        result = repair_workspace(ws, dry_run=dry_run, show_details=dry_run)
+        result = repair_workspace(ws, dry_run=dry_run, show_details=dry_run, remove_orphans=remove_orphans)
 
         if result['success']:
             if result['sessions_restored'] > 0:

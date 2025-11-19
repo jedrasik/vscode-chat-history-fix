@@ -17,9 +17,15 @@ Solution:
 - Rebuild the chat.ChatSessionStore.index in state.vscdb
 
 Usage:
-    python3 fix_chat_session_index_v2.py [workspace_id]
+    python3 fix_chat_session_index_v2.py [workspace_id] [--dry-run] [--remove-orphans] [--yes]
 
     If workspace_id is not provided, the script will list available workspaces.
+
+Options:
+    --dry-run          Show what would be fixed without making changes
+    --remove-orphans   Remove orphaned index entries (sessions in index but no file)
+                       By default orphaned entries are kept for safety
+    --yes              Skip confirmation prompt
 
 IMPORTANT: Close VS Code completely before running this script!
 """
@@ -97,8 +103,13 @@ def print_workspaces(workspaces):
         print(f"   Database: {'✅' if ws['has_db'] else '❌'}")
         print()
 
-def repair_workspace(workspace_path):
-    """Repair the chat session index for a specific workspace."""
+def repair_workspace(workspace_path, dry_run: bool = False, remove_orphans: bool = False):
+    """Repair the chat session index for a specific workspace.
+
+    dry_run: if True, do not write changes to the database
+    remove_orphans: if True, orphaned index entries will be removed;
+                    otherwise they will be preserved (kept) in the index
+    """
     workspace_storage = Path(workspace_path)
 
     print("=" * 70)
@@ -156,6 +167,22 @@ def repair_workspace(workspace_path):
     # Build new index
     print("📝 Building new index...")
     entries = {}
+
+    # If not removing orphans, preserve existing index entries and merge
+    if not remove_orphans and db_path.exists():
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            row = cursor.execute(
+                "SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'"
+            ).fetchone()
+            conn.close()
+            if row:
+                existing_index = json.loads(row[0])
+                entries = existing_index.get("entries", {}).copy()
+        except Exception:
+            # If we fail to read existing index, continue and rebuild from disk
+            entries = {}
     successful = 0
     failed = 0
 
@@ -227,31 +254,36 @@ def repair_workspace(workspace_path):
         print("❌ No sessions could be indexed. Aborting.")
         return 1
 
-    # Create backup
-    backup_path = str(db_path) + f".backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    print(f"📦 Creating backup: {Path(backup_path).name}")
-    shutil.copy2(db_path, backup_path)
-    print()
-
-    # Build final index structure
+    # Create backup and update database (unless dry_run)
     new_index = {
         "version": 1,
         "entries": entries
     }
 
-    # Update database
-    print("💾 Updating database...")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    # initialize backup_path for static analyzers
+    backup_path = None
 
-    index_json = json.dumps(new_index, separators=(',', ':'))
-    cursor.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
-        ('chat.ChatSessionStore.index', index_json)
-    )
+    if dry_run:
+        print("(dry-run) Would create backup and write updated index to database")
+    else:
+        backup_path = str(db_path) + f".backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        print(f"📦 Creating backup: {Path(backup_path).name}")
+        shutil.copy2(db_path, backup_path)
+        print()
 
-    conn.commit()
-    conn.close()
+        # Update database
+        print("💾 Updating database...")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        index_json = json.dumps(new_index, separators=(',', ':'))
+        cursor.execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+            ('chat.ChatSessionStore.index', index_json)
+        )
+
+        conn.commit()
+        conn.close()
 
     print()
     print("=" * 70)
@@ -268,18 +300,30 @@ def repair_workspace(workspace_path):
     print("   2. Open the Chat view")
     print("   3. Your sessions should now be visible!")
     print()
-    print(f"💾 Backup saved to: {Path(backup_path).name}")
-    print("   (in case you need to restore)")
+    if dry_run:
+        print("💾 No backup created in dry-run mode")
+    else:
+        backup_name = Path(backup_path).name if backup_path else 'unknown'
+        print(f"💾 Backup saved to: {backup_name}")
+        print("   (in case you need to restore)")
     print()
 
     return 0
 
 def main():
-    print()
+    # Parse flags
+    dry_run = '--dry-run' in sys.argv
+    remove_orphans = '--remove-orphans' in sys.argv
+    auto_yes = '--yes' in sys.argv
 
-    # Check if workspace ID was provided as argument
-    if len(sys.argv) > 1:
-        workspace_id = sys.argv[1]
+    # find first non-flag argument to use as workspace id
+    workspace_id = None
+    for a in sys.argv[1:]:
+        if not a.startswith('-'):
+            workspace_id = a
+            break
+
+    if workspace_id:
         storage_root = Path.home() / ".config/Code/User/workspaceStorage"
         workspace_path = storage_root / workspace_id
 
@@ -289,17 +333,17 @@ def main():
             print("Run without arguments to see available workspaces.")
             return 1
 
-        print("⚠️  IMPORTANT: Please close VS Code completely before continuing!")
-        print()
-
-        response = input("Have you closed VS Code? (yes/no): ").strip().lower()
-        if response not in ['yes', 'y']:
+        if not dry_run and not auto_yes:
+            print("⚠️  IMPORTANT: Please close VS Code completely before continuing!")
             print()
-            print("❌ Aborted. Please close VS Code and run this script again.")
-            return 1
+            response = input("Have you closed VS Code? (yes/no): ").strip().lower()
+            if response not in ['yes', 'y']:
+                print()
+                print("❌ Aborted. Please close VS Code and run this script again.")
+                return 1
+            print()
 
-        print()
-        return repair_workspace(workspace_path)
+        return repair_workspace(workspace_path, dry_run=dry_run, remove_orphans=remove_orphans)
 
     # No workspace ID provided - list available workspaces
     workspaces = list_workspaces()
