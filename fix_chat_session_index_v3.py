@@ -36,7 +36,7 @@ import shutil
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional
 
 class WorkspaceInfo:
     def __init__(self, workspace_dir: Path):
@@ -122,6 +122,13 @@ def scan_workspaces() -> List[WorkspaceInfo]:
                 print(f"⚠️  Warning: Failed to scan {workspace_dir.name}: {e}")
 
     return workspaces
+
+def find_orphan_in_other_workspaces(session_id: str, current_workspace: WorkspaceInfo, all_workspaces: List[WorkspaceInfo]) -> Optional[WorkspaceInfo]:
+    """Check if an orphaned session ID exists as a file in another workspace."""
+    for ws in all_workspaces:
+        if ws.id != current_workspace.id and session_id in ws.sessions_on_disk:
+            return ws
+    return None
 
 def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_details: bool = False, remove_orphans: bool = False) -> Dict:
     """Repair a workspace's chat session index."""
@@ -288,6 +295,7 @@ def main():
 
     total_missing = 0
     total_orphaned = 0
+    recoverable_orphans = {}  # session_id -> source workspace
 
     for i, ws in enumerate(needs_repair, 1):
         print(f"{i}. Workspace: {ws.id}")
@@ -308,12 +316,23 @@ def main():
                 orphan_msg += " (will be kept - use --remove-orphans to remove)"
             print(orphan_msg)
             total_orphaned += len(ws.orphaned_in_index)
+            
+            # Check if orphans exist in other workspaces
+            for session_id in ws.orphaned_in_index:
+                found_in = find_orphan_in_other_workspaces(session_id, ws, workspaces)
+                if found_in:
+                    recoverable_orphans[session_id] = found_in
+                    folder_display = f" ({found_in.folder})" if found_in.folder else ""
+                    print(f"      💡 Session {session_id[:8]}... found in workspace {found_in.id}{folder_display}")
 
         print()
 
     print(f"📊 Total issues:")
     print(f"   Sessions to restore: {total_missing}")
-    print(f"   Orphaned entries to remove: {total_orphaned}")
+    print(f"   Orphaned entries: {total_orphaned}")
+    if recoverable_orphans:
+        print(f"   🔍 Orphans found in other workspaces: {len(recoverable_orphans)}")
+        print(f"      (You can copy these .json files if needed)")
     print()
 
     # Confirm before proceeding

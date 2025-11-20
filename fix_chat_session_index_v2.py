@@ -36,6 +36,69 @@ import shutil
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional, List, Set, Dict
+
+def get_sessions_from_disk(sessions_dir: Path) -> Set[str]:
+    """Get set of session IDs from disk."""
+    if not sessions_dir.exists():
+        return set()
+    return {f.stem for f in sessions_dir.glob("*.json")}
+
+def get_sessions_from_index(db_path: Path) -> Set[str]:
+    """Get set of session IDs from database index."""
+    if not db_path.exists():
+        return set()
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'"
+        ).fetchone()
+        conn.close()
+        if row:
+            index = json.loads(row[0])
+            return set(index.get("entries", {}).keys())
+    except:
+        pass
+    return set()
+
+def find_session_in_workspaces(session_id: str, exclude_workspace: str) -> Optional[Dict]:
+    """Find a session file in other workspaces."""
+    storage_root = Path.home() / ".config/Code/User/workspaceStorage"
+    if not storage_root.exists():
+        return None
+    
+    for workspace_dir in storage_root.iterdir():
+        if not workspace_dir.is_dir() or workspace_dir.name == exclude_workspace:
+            continue
+        
+        sessions_dir = workspace_dir / "chatSessions"
+        session_file = sessions_dir / f"{session_id}.json"
+        
+        if session_file.exists():
+            # Get workspace info
+            workspace_json = workspace_dir / "workspace.json"
+            folder = None
+            if workspace_json.exists():
+                try:
+                    with open(workspace_json, 'r') as f:
+                        info = json.load(f)
+                        if 'folder' in info:
+                            folder_data = info['folder']
+                            if isinstance(folder_data, str):
+                                folder = folder_data
+                            elif isinstance(folder_data, dict) and 'path' in folder_data:
+                                folder = folder_data['path']
+                except:
+                    pass
+            
+            return {
+                'workspace_id': workspace_dir.name,
+                'folder': folder,
+                'session_file': session_file
+            }
+    
+    return None
 
 def list_workspaces():
     """List all VS Code workspace storage directories."""
@@ -158,6 +221,33 @@ def repair_workspace(workspace_path, dry_run: bool = False, remove_orphans: bool
 
     session_files = list(sessions_dir.glob("*.json"))
     print(f"🔍 Found {len(session_files)} session file(s) on disk")
+    
+    # Check for orphans and cross-workspace sessions
+    sessions_on_disk = get_sessions_from_disk(sessions_dir)
+    sessions_in_index = get_sessions_from_index(db_path)
+    
+    missing_from_index = sessions_on_disk - sessions_in_index
+    orphaned_in_index = sessions_in_index - sessions_on_disk
+    
+    if missing_from_index:
+        print(f"   ⚠️  Missing from index: {len(missing_from_index)}")
+    
+    if orphaned_in_index:
+        print(f"   🗑️  Orphaned in index: {len(orphaned_in_index)}")
+        
+        # Check if orphans exist in other workspaces
+        recoverable_orphans = {}
+        for session_id in orphaned_in_index:
+            found_in = find_session_in_workspaces(session_id, workspace_storage.name)
+            if found_in:
+                recoverable_orphans[session_id] = found_in
+                folder_display = f" ({found_in['folder']})" if found_in['folder'] else ""
+                print(f"      💡 Session {session_id[:8]}... found in workspace {found_in['workspace_id']}{folder_display}")
+        
+        if recoverable_orphans:
+            print(f"      🔍 {len(recoverable_orphans)} orphan(s) found in other workspaces")
+            print(f"         You can copy these .json files if you want to recover them")
+    
     print()
 
     if len(session_files) == 0:

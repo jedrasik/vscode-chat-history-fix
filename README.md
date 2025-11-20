@@ -118,6 +118,43 @@ python3 fix_chat_session_index_v2.py <workspace_id> --remove-orphans
 
 ---
 
+## Cross-Workspace Orphan Detection 💡
+
+When the repair tools detect orphaned sessions (entries in the index but no file on disk), they automatically check **all other workspaces** to see if the session file exists elsewhere.
+
+This helps you:
+- **Recover accidentally moved sessions** - If a session was associated with the wrong workspace
+- **Identify migration opportunities** - See which sessions can be copied from other workspaces
+- **Understand orphaned entries** - Know if they're truly lost or just in the wrong place
+
+### Example
+
+```
+🗑️  Orphaned in index: 2 (will be kept - use --remove-orphans to remove)
+   💡 Session abc12345... found in workspace a1b2c3d4 (/home/user/other-project)
+```
+
+This means:
+- Session `abc12345` is referenced in the current workspace's index
+- But the `.json` file doesn't exist in the current workspace
+- The file **was found** in workspace `a1b2c3d4` (other-project folder)
+- You can copy it if you want to recover it in the current workspace
+
+### How to Recover Cross-Workspace Sessions
+
+If the tool shows a session exists in another workspace:
+
+```bash
+# Copy the session file from the other workspace
+cp ~/.config/Code/User/workspaceStorage/<source-workspace-id>/chatSessions/<session-id>.json \
+   ~/.config/Code/User/workspaceStorage/<target-workspace-id>/chatSessions/
+
+# Then re-run the repair tool to add it to the index
+python3 fix_chat_session_index_v2.py <target-workspace-id>
+```
+
+---
+
 ## Important Considerations
 
 ### Prerequisites
@@ -168,6 +205,9 @@ python3 fix_chat_session_index_v2.py <workspace_id> --remove-orphans
          • Setup PostgreSQL database connection (2024-10-25 11:03)
          • Write unit tests for API endpoints (2024-10-08 16:50)
          ... and 7 more
+      🗑️  Orphaned in index: 2 (will be kept - use --remove-orphans to remove)
+         💡 Session abc12345... found in workspace a1b2c3d4 (/home/user/other-project)
+         💡 Session def67890... found in workspace e5f6g7h8 (/home/user/another-project)
 
 🔍 DRY RUN COMPLETE
 

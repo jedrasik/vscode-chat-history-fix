@@ -28,6 +28,14 @@ chatSessions/
 - But the actual `.json` files for these sessions **no longer exist** on disk
 - These are "ghost" references to deleted/missing sessions
 
+**Cross-Workspace Detection:**
+- The repair tools now check if orphaned sessions exist in **other workspaces**
+- If found, you'll see a message like:
+  ```
+  💡 Session abc12345... found in workspace 68afb7eb (file:///home/user/other-project)
+  ```
+- This helps you recover sessions that may have been accidentally moved or associated with the wrong workspace
+
 **What happens by default:**
 - The orphaned entries are **kept** in the index (for safety)
 - They won't cause any harm, just clutter
@@ -40,6 +48,7 @@ chatSessions/
 ```
 Index has:
   - abc123 → ❌ File missing (orphan) → Kept by default
+              💡 Found in workspace XYZ - you can copy it!
   - def456 → ❌ File missing (orphan) → Kept by default
   - ghi789 → ✅ File exists → Will remain
   
