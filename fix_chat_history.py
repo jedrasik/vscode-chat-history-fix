@@ -31,6 +31,8 @@ Options:
     --yes              Skip confirmation prompts
     --remove-orphans   Remove orphaned index entries (default: keep)
     --recover-orphans  Copy orphaned sessions from other workspaces
+    --insiders         Only process VS Code Insiders workspaces
+    --stable           Only process VS Code Stable workspaces
     --help, -h         Show this help message
 
 Examples:
@@ -76,17 +78,21 @@ def extract_project_name(folder_path: Optional[str]) -> Optional[str]:
     except:
         return None
 
-def get_vscode_storage_root() -> Path:
-    """Get the VS Code workspace storage directory for the current platform."""
+def get_vscode_storage_root(variant: str = "Code") -> Path:
+    """Get the VS Code workspace storage directory for the current platform.
+    
+    Args:
+        variant: Either "Code" (stable) or "Code - Insiders"
+    """
     home = Path.home()
     system = platform.system()
     
     if system == "Darwin":  # macOS
-        return home / "Library/Application Support/Code/User/workspaceStorage"
+        return home / f"Library/Application Support/{variant}/User/workspaceStorage"
     elif system == "Windows":
-        return home / "AppData/Roaming/Code/User/workspaceStorage"
+        return home / f"AppData/Roaming/{variant}/User/workspaceStorage"
     else:  # Linux and others
-        return home / ".config/Code/User/workspaceStorage"
+        return home / f".config/{variant}/User/workspaceStorage"
 
 def folders_match(folder1: Optional[str], folder2: Optional[str]) -> bool:
     """Check if two workspace folders likely refer to the same project."""
@@ -103,9 +109,10 @@ def folders_match(folder1: Optional[str], folder2: Optional[str]) -> bool:
     return name1.lower() == name2.lower()
 
 class WorkspaceInfo:
-    def __init__(self, workspace_dir: Path):
+    def __init__(self, workspace_dir: Path, variant: str = "Code"):
         self.path = workspace_dir
         self.id = workspace_dir.name
+        self.variant = variant  # "Code" or "Code - Insiders"
         self.sessions_dir = workspace_dir / "chatSessions"
         self.db_path = workspace_dir / "state.vscdb"
 
@@ -155,11 +162,13 @@ class WorkspaceInfo:
     
     def get_display_name(self) -> str:
         """Get a user-friendly display name for this workspace."""
+        variant_label = "Insiders" if self.variant == "Code - Insiders" else "Stable"
+        
         # Try to get name from folder
         if self.folder:
             project_name = extract_project_name(self.folder)
             if project_name:
-                return f"{project_name} ({self.id[:8]}...) [Folder]"
+                return f"{project_name} ({self.id[:8]}...) [Folder] [{variant_label}]"
         
         # Try to get name from .code-workspace file
         if self.workspace_file:
@@ -168,10 +177,10 @@ class WorkspaceInfo:
                 # Remove .code-workspace extension if present
                 if workspace_name.endswith('.code-workspace'):
                     workspace_name = workspace_name[:-15]
-                return f"{workspace_name} ({self.id[:8]}...) [Workspace File]"
+                return f"{workspace_name} ({self.id[:8]}...) [Workspace File] [{variant_label}]"
         
         # Fallback to "Unknown"
-        return f"Unknown ({self.id[:8]}...)"
+        return f"Unknown ({self.id[:8]}...) [{variant_label}]"
 
     @property
     def missing_from_index(self) -> Set[str]:
@@ -193,23 +202,36 @@ class WorkspaceInfo:
         """True if workspace has any session files."""
         return len(self.sessions_on_disk) > 0
 
-def scan_workspaces() -> List[WorkspaceInfo]:
-    """Scan all VS Code workspaces and return their info."""
-    storage_root = get_vscode_storage_root()
-
-    if not storage_root.exists():
-        return []
-
+def scan_workspaces(variant: Optional[str] = None) -> List[WorkspaceInfo]:
+    """Scan VS Code workspaces and return their info.
+    
+    Args:
+        variant: Either "Code", "Code - Insiders", or None to scan both
+    """
     workspaces = []
-    for workspace_dir in storage_root.iterdir():
-        if workspace_dir.is_dir():
-            try:
-                ws = WorkspaceInfo(workspace_dir)
-                if ws.has_sessions:  # Only include workspaces with sessions
-                    workspaces.append(ws)
-            except Exception as e:
-                print(f"⚠️  Warning: Failed to scan {workspace_dir.name}: {e}")
-
+    variants_to_scan = []
+    
+    if variant:
+        variants_to_scan = [variant]
+    else:
+        # Scan both stable and insiders
+        variants_to_scan = ["Code", "Code - Insiders"]
+    
+    for var in variants_to_scan:
+        storage_root = get_vscode_storage_root(var)
+        
+        if not storage_root.exists():
+            continue
+        
+        for workspace_dir in storage_root.iterdir():
+            if workspace_dir.is_dir():
+                try:
+                    ws = WorkspaceInfo(workspace_dir, variant=var)
+                    if ws.has_sessions:  # Only include workspaces with sessions
+                        workspaces.append(ws)
+                except Exception as e:
+                    print(f"⚠️  Warning: Failed to scan {workspace_dir.name}: {e}")
+    
     return workspaces
 
 def find_orphan_in_other_workspaces(session_id: str, current_workspace: WorkspaceInfo, all_workspaces: List[WorkspaceInfo]) -> Optional[Dict]:
@@ -347,15 +369,19 @@ def repair_workspace(workspace: WorkspaceInfo, dry_run: bool = False, show_detai
 
     return result
 
-def list_workspaces_mode():
+def list_workspaces_mode(variant: Optional[str] = None):
     """List all workspaces with chat sessions."""
     print()
     print("=" * 70)
-    print("VS Code Workspaces with Chat Sessions")
+    if variant:
+        variant_name = "Insiders" if variant == "Code - Insiders" else "Stable"
+        print(f"VS Code {variant_name} Workspaces with Chat Sessions")
+    else:
+        print("VS Code Workspaces with Chat Sessions (Stable & Insiders)")
     print("=" * 70)
     print()
 
-    workspaces = scan_workspaces()
+    workspaces = scan_workspaces(variant)
 
     if not workspaces:
         print("No workspaces with chat sessions found.")
@@ -405,12 +431,23 @@ def list_workspaces_mode():
 
     return 0
 
-def repair_single_workspace(workspace_id: str, dry_run: bool, remove_orphans: bool, recover_orphans: bool, auto_yes: bool):
+def repair_single_workspace(workspace_id: str, dry_run: bool, remove_orphans: bool, recover_orphans: bool, auto_yes: bool, variant: Optional[str] = None):
     """Repair a specific workspace by ID."""
-    storage_root = get_vscode_storage_root()
-    workspace_path = storage_root / workspace_id
-
-    if not workspace_path.exists():
+    # Try to find the workspace in either stable or insiders
+    variants_to_try = [variant] if variant else ["Code", "Code - Insiders"]
+    
+    workspace_path = None
+    found_variant = None
+    
+    for var in variants_to_try:
+        storage_root = get_vscode_storage_root(var)
+        candidate_path = storage_root / workspace_id
+        if candidate_path.exists():
+            workspace_path = candidate_path
+            found_variant = var
+            break
+    
+    if not workspace_path:
         print(f"❌ Error: Workspace ID '{workspace_id}' not found")
         print()
         print("Run with --list to see available workspaces.")
@@ -426,7 +463,7 @@ def repair_single_workspace(workspace_id: str, dry_run: bool, remove_orphans: bo
         print("🔍 DRY RUN MODE - No changes will be made")
         print()
 
-    workspace = WorkspaceInfo(workspace_path)
+    workspace = WorkspaceInfo(workspace_path, variant=found_variant)
     
     print(f"🔧 Workspace: {workspace.get_display_name()}")
     if not workspace.folder and not workspace.workspace_file:
@@ -458,7 +495,7 @@ def repair_single_workspace(workspace_id: str, dry_run: bool, remove_orphans: bo
             orphan_msg += " (will be kept)"
         print(orphan_msg)
         
-        # Check if orphans exist in other workspaces
+        # Check if orphans exist in other workspaces (scan all variants)
         all_workspaces = scan_workspaces()
         for session_id in workspace.orphaned_in_index:
             found_info = find_orphan_in_other_workspaces(session_id, workspace, all_workspaces)
@@ -546,11 +583,15 @@ def repair_single_workspace(workspace_id: str, dry_run: bool, remove_orphans: bo
         print(f"❌ Repair failed: {result['error']}")
         return 1
 
-def repair_all_workspaces(dry_run: bool, auto_yes: bool, remove_orphans: bool, recover_orphans: bool):
+def repair_all_workspaces(dry_run: bool, auto_yes: bool, remove_orphans: bool, recover_orphans: bool, variant: Optional[str] = None):
     """Auto-repair all workspaces that need it."""
     print()
     print("=" * 70)
-    print("VS Code Chat History Repair Tool - Auto Repair")
+    if variant:
+        variant_name = "Insiders" if variant == "Code - Insiders" else "Stable"
+        print(f"VS Code {variant_name} Chat History Repair Tool - Auto Repair")
+    else:
+        print("VS Code Chat History Repair Tool - Auto Repair (Stable & Insiders)")
     print("=" * 70)
     print()
 
@@ -568,7 +609,7 @@ def repair_all_workspaces(dry_run: bool, auto_yes: bool, remove_orphans: bool, r
 
     # Scan all workspaces
     print("🔍 Scanning VS Code workspaces...")
-    workspaces = scan_workspaces()
+    workspaces = scan_workspaces(variant)
 
     if not workspaces:
         print("No workspaces with chat sessions found.")
@@ -773,6 +814,15 @@ def main():
     recover_orphans = '--recover-orphans' in sys.argv
     list_mode = '--list' in sys.argv
     show_help = '--help' in sys.argv or '-h' in sys.argv
+    insiders_only = '--insiders' in sys.argv
+    stable_only = '--stable' in sys.argv
+    
+    # Determine variant
+    variant = None
+    if insiders_only:
+        variant = "Code - Insiders"
+    elif stable_only:
+        variant = "Code"
 
     if show_help:
         print(__doc__)
@@ -780,7 +830,7 @@ def main():
 
     # List mode
     if list_mode:
-        return list_workspaces_mode()
+        return list_workspaces_mode(variant)
 
     # Find first non-flag argument to use as workspace id
     workspace_id = None
@@ -801,7 +851,7 @@ def main():
                 return 1
             print()
 
-        return repair_single_workspace(workspace_id, dry_run, remove_orphans, recover_orphans, auto_yes)
+        return repair_single_workspace(workspace_id, dry_run, remove_orphans, recover_orphans, auto_yes, variant)
 
     # Auto-repair all workspaces mode (default)
     if not dry_run and not auto_yes:
@@ -814,7 +864,7 @@ def main():
             print("❌ Aborted. Please close VS Code and run this script again.")
             return 1
 
-    return repair_all_workspaces(dry_run, auto_yes, remove_orphans, recover_orphans)
+    return repair_all_workspaces(dry_run, auto_yes, remove_orphans, recover_orphans, variant)
 
 if __name__ == "__main__":
     exit_code = main()

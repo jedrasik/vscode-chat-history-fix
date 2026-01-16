@@ -5,22 +5,35 @@ A utility to repair corrupted chat session indices in VS Code's workspace storag
 > **Problem:** VS Code chat sessions become invisible due to index corruption in `state.vscdb`, despite session data files remaining intact on disk.  
 > **Solution:** This tool scans session files and rebuilds the database index to restore visibility of all chat sessions.
 
+**Supports both VS Code Stable and VS Code Insiders** - processes both versions simultaneously or individually.
+
 ## Quick Start
 
 ### Step 1: Preview Changes
 
 ```bash
+# Preview changes for both VS Code Stable and Insiders
 python3 fix_chat_history.py --dry-run
+
+# Preview only VS Code Insiders
+python3 fix_chat_history.py --dry-run --insiders
 ```
 
 Displays affected workspaces and sessions to be restored without modifying any files.
 
 ### Step 2: Apply the Fix
 
-**Close VS Code completely**, then run:
+**Close VS Code (and/or VS Code Insiders) completely**, then run:
 
 ```bash
+# Fix both Stable and Insiders
 python3 fix_chat_history.py
+
+# Fix only Insiders
+python3 fix_chat_history.py --insiders
+
+# Fix only Stable
+python3 fix_chat_history.py --stable
 ```
 
 ### Step 3: Verify
@@ -35,6 +48,7 @@ Restart VS Code and verify sessions appear in the Chat view.
 
 VS Code's core chat service (not the GitHub Copilot extension) manages regular chat sessions using the following structure:
 
+**VS Code Stable:**
 ```
 ~/.config/Code/User/workspaceStorage/<workspace-id>/
 ├── state.vscdb                    # SQLite database
@@ -44,6 +58,16 @@ VS Code's core chat service (not the GitHub Copilot extension) manages regular c
     ├── session-2.json
     └── session-3.json
 ```
+
+**VS Code Insiders:**
+```
+~/.config/Code - Insiders/User/workspaceStorage/<workspace-id>/
+├── state.vscdb
+└── chatSessions/
+    └── ... (same structure)
+```
+
+> The tool automatically detects and processes both installations.
 
 **Session Creation Process:**
 1. Full conversation stored as JSON in `chatSessions/`
@@ -81,14 +105,20 @@ The tool performs the following operations:
 Auto-repair all workspaces that need fixing:
 
 ```bash
-# Safe preview - see what would be fixed
+# Safe preview - see what would be fixed (both Stable and Insiders)
 python3 fix_chat_history.py --dry-run
+
+# Preview only Insiders workspaces
+python3 fix_chat_history.py --dry-run --insiders
 
 # Fix everything (asks for confirmation)
 python3 fix_chat_history.py
 
-# Fix everything automatically (no prompts)
-python3 fix_chat_history.py --yes
+# Fix only Insiders workspaces
+python3 fix_chat_history.py --insiders --yes
+
+# Fix only Stable workspaces
+python3 fix_chat_history.py --stable --yes
 ```
 
 ### List Workspaces
@@ -96,34 +126,50 @@ python3 fix_chat_history.py --yes
 See all VS Code workspaces with chat sessions:
 
 ```bash
+# List all workspaces (both Stable and Insiders)
 python3 fix_chat_history.py --list
+
+# List only Insiders workspaces
+python3 fix_chat_history.py --list --insiders
+
+# List only Stable workspaces
+python3 fix_chat_history.py --list --stable
 ```
 
-This shows you which workspaces have sessions and which need repair.
+This shows you which workspaces have sessions and which need repair. Each workspace is labeled with `[Stable]` or `[Insiders]`.
 
 ### Repair Specific Workspace
 
 If you want to fix only one workspace:
 
 ```bash
-# Fix a specific workspace by ID
+# Fix a specific workspace by ID (auto-detects Stable or Insiders)
 python3 fix_chat_history.py <workspace_id>
 
 # Example
 python3 fix_chat_history.py f4c750964946a489902dcd863d1907de
+
+# Force search only in Insiders
+python3 fix_chat_history.py <workspace_id> --insiders
 ```
 
 ### Advanced Options
 
 ```bash
-# Recover orphaned sessions from other workspaces
+# Recover orphaned sessions from other workspaces (searches both versions)
 python3 fix_chat_history.py --recover-orphans
 
 # Remove orphaned index entries (default: keep them)
 python3 fix_chat_history.py --remove-orphans
 
-# Combine flags: recover orphans + auto-confirm
-python3 fix_chat_history.py --recover-orphans --yes
+# Process only VS Code Insiders
+python3 fix_chat_history.py --insiders
+
+# Process only VS Code Stable
+python3 fix_chat_history.py --stable
+
+# Combine flags: recover orphans in Insiders + auto-confirm
+python3 fix_chat_history.py --insiders --recover-orphans --yes
 
 # Help and all options
 python3 fix_chat_history.py --help
@@ -240,7 +286,7 @@ python3 fix_chat_history.py <target-workspace-id>
 
 🔧 Found 1 workspace(s) needing repair:
 
-1. Workspace: 68afb7ebecb251d147a02dcf70c41df7
+1. Workspace: my-project (68afb7eb...) [Folder] [Stable]
    Folder: /home/user/my-project
    Sessions on disk: 13
    Sessions in index: 1
@@ -290,7 +336,11 @@ To apply these changes, run without --dry-run:
 
 **No workspaces found**
 - Verify VS Code Chat has been used previously
-- Confirm workspace storage directory exists: `~/.config/Code/User/workspaceStorage/` (Linux/macOS) or `%APPDATA%\Code\User\workspaceStorage\` (Windows)
+- Confirm workspace storage directory exists:
+  - **Stable (Linux/macOS):** `~/.config/Code/User/workspaceStorage/`
+  - **Stable (Windows):** `%APPDATA%\Code\User\workspaceStorage\`
+  - **Insiders (Linux/macOS):** `~/.config/Code - Insiders/User/workspaceStorage/`
+  - **Insiders (Windows):** `%APPDATA%\Code - Insiders\User\workspaceStorage\`
 
 **Sessions not restored after repair**
 - Confirm VS Code was completely closed before running the script
